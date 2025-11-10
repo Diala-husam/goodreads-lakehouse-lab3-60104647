@@ -1,126 +1,92 @@
-# goodreads-lakehouse-lab3-60104647
+Lab Overview
 
-# Goodreads Data Cleaning & Aggregation – Fabric Lab
+This lab focused on processing, cleaning, and transforming Goodreads review data through Microsoft Fabric and Databricks to produce a curated Gold dataset ready for analytics and modeling.
 
-### Student Information
-**Name:** Diala Hussein  
-**Course:** Data Engineering / Azure Fabric Lab  
-**Dataset:** Goodreads Reviews  
-**Goal:** To clean, transform, and aggregate Goodreads review data in **Microsoft Fabric** using **Power Query**, following the provided lab instructions.
+Steps Completed
+Data Ingestion and Preparation
 
----
+Imported the raw Goodreads reviews dataset into Microsoft Fabric.
 
-## Part 1 – Load the Delta Table
+Transformed and cleaned text columns (capitalization, removal of invalid characters, etc.).
 
-- Created a new **Dataflow (Gen2)** in Microsoft Fabric.  
-- Used a **Blank Query** and pasted the Power Query M code to connect to my Delta folder:
-  ```m
-  Source = AzureStorage.DataLake("https://goodreadsreviewsgen2.dfs.core.windows.net/lakehouse/gold/curated_reviews/")
+Encountered long evaluation delays in Fabric (“evaluation was canceled”), so the final preprocessing was continued in Databricks.
 
-Initially got a few DataFormatError messages (“no valid Delta table at this location”), then filtered only .parquet files using:
+Cleaning the Data in Databricks
+Create a new notebook
 
-Table.SelectRows(Source, each Text.EndsWith([Name], ".parquet"))
+Created a new Python notebook in Databricks.
 
+Connected to the Fabric dataset located in the Silver layer (curated_reviews).
 
-Successfully combined the Parquet files — the table preview showed columns like:
-review_id, book_id, title, user_id, rating, review_text, n_votes, and date_added.
+Load curated dataset
+df = spark.read.format("delta").load("abfss://lakehouse@goodreadsreviewsgen2.dfs.core.windows.net/gold/curated_reviews")
 
- Worked: Connection to Data Lake and file combination
-Issue fixed: Initially tried connecting to _delta_log — corrected to point at curated_reviews folder.
+Clean the data
 
+Removed unused columns (e.g., author_id, review_text where null).
 
-Part 2 – Clean the Data
-a. Adjust Data Types
+Dropped duplicate reviews by review_id and (user_id, book_id) combinations.
 
-Used Transform → Data Type to set:
+Trimmed extra spaces, standardized text case, and removed malformed rows.
 
-review_id, book_id, user_id → Text
+Dropped reviews with extremely short text.
 
-rating, n_votes → Whole Number
+Converted data types (IDs as integers, dates as timestamps, etc.).
 
-date_added → Date
+Feature preparation
 
-Worked: All type conversions applied
-Note: date_added column contained only null values.
+Computed two main features for each book:
 
-b. Handle Missing or Invalid Values
+avg_rating_per_book — Average rating per book.
 
-Removed blank rows for rating using:
-Transform → Remove Rows → Remove Blank Rows
+num_reviews — Number of reviews per book.
 
-Verified that rows with valid ratings remained.
+Aggregation logic:
 
-Worked: Blank ratings removed
+agg_df = df.groupBy("book_id").agg(
+    F.avg("rating").alias("avg_rating_per_book"),
+    F.count("*").alias("num_reviews")
+)
 
-c. Create Derived Column: review_length
+Save results to Gold layer
 
-Added a new column using:
+Tried saving to:
 
-Text.Length([review_text])
+abfss://lakehouse@goodreadsreviewsgen2.dfs.core.windows.net/gold/features_v1
 
 
-This column measures how long each review is.
+Encountered DELTA_CANNOT_CREATE_LOG_PATH (no write permissions).
 
-Worked: Column created successfully
+Workaround: Saved to Databricks internal storage:
 
-d. Filter Short Reviews
+(agg_df.write
+    .format("delta")
+    .mode("overwrite")
+    .option("overwriteSchema", "true")
+    .save("/mnt/tmp/features_v1")
+)
 
-Kept only reviews with text length > 10 characters using:
-Filter Rows → review_length > 10
+Verification
 
-Worked: Short/empty reviews removed
+Reloaded dataset:
 
-e. Handle Missing Values
-
-language column was missing entirely from dataset → Skipped this step safely.
-
-n_votes column had nulls, but handled later during transformations if needed.
-
-author_id and name columns were all null → kept as-is (irrelevant for final aggregation).
-
-Decision: Safe to skip missing columns not present in data
-
-f. Trim & Standardize Text
-
-Used:
-
-Transform → Format → Trim
-
-Transform → Format → Capitalize Each Word
-on title and review_text columns.
-
-Worked: Clean text formatting applied
-
-Part 3 – Aggregations
-
-Built derived features using Group By:
-
-Average Rating per Book
-
-Grouped by book_id
-
-Operation: Average of rating
-
-New column: avg_rating_per_book
-
-Number of Reviews per Book
-
-Grouped by book_id
-
-Operation: Count Rows
-
-New column: review_count
-
-Issue: When trying to evaluate aggregations, Power Query ran for 10–15 minutes and then stopped with
-“Evaluation was cancelled.”
-This may be caused by slow Fabric environment or table size.
+display(spark.read.format("delta").load("/mnt/tmp/features_v1"))
 
 
-Part 4 – Publish & Finalization
+Output verified successfully (863 rows, correct schema).
 
-Attempted to click Publish, but due to evaluation timeout, process couldn’t complete.
+Final Result
+Column	Description
+book_id	Unique identifier for each book
+avg_rating_per_book	Average rating across reviews
+num_reviews	Number of reviews per book
 
-Saved all transformations and added this report to GitHub for review.
+Successfully cleaned, aggregated, and stored the Gold dataset in Delta format within Databricks.
 
-Progress: Data cleaning steps 100% completed
-Pending: Final aggregation publishing (due to Fabric runtime cancellation)
+Notes
+
+Fabric evaluation was canceled repeatedly, leading to migration of processing to Databricks.
+
+Delta format ensures reliable performance for large-scale queries and modeling.
+
+Future improvement: Reconnect ADLS permissions to enable direct Gold layer writing.
